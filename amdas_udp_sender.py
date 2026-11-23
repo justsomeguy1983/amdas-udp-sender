@@ -14,7 +14,7 @@ from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 from amdas import AMDAS_VERSION
-from flight import FIX_NAMES, MAX_MINUTES, MIN_MINUTES
+from flight import MAX_MINUTES, MIN_MINUTES
 from sender import Sender
 
 VERSION = "1.0.1"
@@ -36,17 +36,13 @@ FIELDS = (
 )
 
 
-def mmss(seconds):
-    return "%d:%02d" % divmod(int(seconds), 60)
-
-
 class Window:
     def __init__(self, root):
         self.root = root
         self.sender = None
         self.events = queue.Queue()
         root.title("%s %s" % (TITLE, VERSION))
-        root.minsize(900, 660)
+        root.minsize(900, 580)
         root.protocol("WM_DELETE_WINDOW", self.close)
         mono = tkfont.nametofont("TkFixedFont").copy()
         mono.configure(size=10)
@@ -124,14 +120,8 @@ class Window:
             means.grid(row=row, column=2, sticky="w")
             self.field_values.append((value, means))
 
-        # Not sent: what the simulation is doing
-        info = ttk.LabelFrame(outer, text="NOT SENT: the simulated flight, shown here only", padding=8)
-        info.pack(fill="x", pady=(10, 0))
-        self.flight = ttk.Label(info, text="Press Start.", foreground=GREY)
-        self.flight.pack(anchor="w")
-
         ttk.Label(outer, foreground=GREY, text="Record format from AMDAS %s." % AMDAS_VERSION
-                  ).pack(anchor="w", pady=(6, 0))
+                  ).pack(anchor="w", pady=(8, 0))
         self.root.after(100, self.poll)
 
     # ---- start / stop
@@ -165,7 +155,6 @@ class Window:
             widget.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.state.configure(text="Stopped", fg=GREY)
-        self.flight.configure(text="Stopped.")
 
     def close(self):
         self.stop()
@@ -184,10 +173,6 @@ class Window:
                 if self.sender is None:
                     continue
                 self.update_counts()
-                self.flight.configure(foreground="", text="%s · %s ft above the field · GPS %s · %s into a "
-                                      "%s flight" % (point.phase, format(round(point.altitude_ft), ","),
-                                                     FIX_NAMES[point.gps_fix], mmss(point.elapsed),
-                                                     mmss(self.sender.flight.total)))
                 if error:
                     self.state.configure(text="Send failed: %s" % error, fg=RED)
                     continue

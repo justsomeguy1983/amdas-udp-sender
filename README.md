@@ -30,8 +30,6 @@ What the window shows:
   Nothing else is sent.
 - **SENT, right:** the last packet taken apart field by field, with what each field means (sys_time as a
   UTC clock time, gps_fix as a fix name).
-- **NOT SENT, bottom:** what the simulated flight is doing: phase, altitude above the field, GPS state and
-  time into the flight. For information only.
 
 ### Receiver on the same computer (127.0.0.1)
 
