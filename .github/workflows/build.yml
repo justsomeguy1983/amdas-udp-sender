@@ -1,0 +1,55 @@
+name: Windows program
+
+# Every push: test, build AMDAS-UDP-Sender.exe on Windows, check the .exe runs, keep it as a download on the
+# run's page. A tag like v1.0.0 also publishes it as a release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build the .exe
+        run: |
+          python -m pip install pyinstaller==6.16.0
+          pyinstaller --onefile --windowed --name AMDAS-UDP-Sender amdas_udp_sender.py
+
+      - name: Check the built .exe sends correct records and opens its window
+        shell: pwsh
+        run: |
+          $result = Join-Path $PWD "self-test.txt"
+          $p = Start-Process -FilePath "dist\AMDAS-UDP-Sender.exe" -ArgumentList "--self-test", "`"$result`"" -Wait -PassThru
+          Get-Content $result
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: AMDAS-UDP-Sender
+          path: dist/AMDAS-UDP-Sender.exe
+
+      - name: Publish the release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/AMDAS-UDP-Sender.exe
+          --title "AMDAS UDP test sender $GITHUB_REF_NAME"
+          --notes "Download AMDAS-UDP-Sender.exe below and double-click it. How to use it: see README.md."
