@@ -9,7 +9,6 @@ import argparse
 import queue
 import socket
 import sys
-import time
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
@@ -18,13 +17,23 @@ from amdas import AMDAS_VERSION
 from flight import FIX_NAMES, MAX_MINUTES, MIN_MINUTES
 from sender import Sender
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 TITLE = "AMDAS UDP test sender"
 KEEP_LINES = 300
 GREEN, RED, GREY = "#1a7f37", "#cf222e", "#57606a"
-FIELDS = ("sys_time (seconds since midnight UTC) · pressure (psia) · pressure altitude (ft) · "
-          "GPS altitude (m above sea level) · temperature (°C) · humidity (%RH) · "
-          "gps_fix (0 none, 2 3D, 3 SBAS; 7-field records only)")
+GPS_FIX = {0: "no fix", 1: "2D", 2: "3D", 3: "SBAS", 4: "differential", 5: "PPP", 6: "RTK float",
+           7: "RTK fixed"}
+# (field name, what the sent text means: a unit, or a function of the text)
+FIELDS = (
+    ("sys_time", lambda text: "= %02d:%02d:%02d UTC, seconds since midnight" % (
+        int(text) // 3600, int(text) // 60 % 60, int(text) % 60)),
+    ("pressure", "psia"),
+    ("pressure altitude", "ft"),
+    ("GPS altitude", "m above sea level"),
+    ("temperature", "°C"),
+    ("humidity", "%RH"),
+    ("gps_fix", lambda text: "= %s" % GPS_FIX.get(int(text), "?")),
+)
 
 
 def mmss(seconds):
@@ -37,10 +46,12 @@ class Window:
         self.sender = None
         self.events = queue.Queue()
         root.title("%s %s" % (TITLE, VERSION))
-        root.minsize(760, 520)
+        root.minsize(900, 660)
         root.protocol("WM_DELETE_WINDOW", self.close)
         mono = tkfont.nametofont("TkFixedFont").copy()
         mono.configure(size=10)
+        mono_bold = mono.copy()
+        mono_bold.configure(weight="bold")
 
         outer = ttk.Frame(root, padding=12)
         outer.pack(fill="both", expand=True)
@@ -66,12 +77,12 @@ class Window:
             settings, variable=self.seven,
             text="Send 7 fields, with gps_fix (as AMDAS does). Clear it for the legacy 6 fields.")
         self.seven_box.grid(row=1, column=0, columnspan=7, sticky="w", pady=(8, 0))
-        ttk.Label(settings, foreground=GREY, wraplength=700, justify="left",
+        ttk.Label(settings, foreground=GREY, wraplength=840, justify="left",
                   text="127.0.0.1 is this computer: the packets then come from 127.0.0.1, not from the "
                        "real unit's address, so the receiver must accept that source while testing."
                   ).grid(row=2, column=0, columnspan=7, sticky="w", pady=(6, 0))
 
-        buttons = ttk.Frame(outer, padding=(0, 10, 0, 4))
+        buttons = ttk.Frame(outer, padding=(0, 10, 0, 8))
         buttons.pack(fill="x")
         self.start_button = ttk.Button(buttons, text="Start", command=self.start, width=12)
         self.start_button.pack(side="left")
@@ -79,27 +90,48 @@ class Window:
         self.stop_button.pack(side="left", padx=(8, 0))
         self.state = tk.Label(buttons, text="Stopped", fg=GREY, font=("TkDefaultFont", 11, "bold"))
         self.state.pack(side="left", padx=(16, 0))
+        self.counts = ttk.Label(buttons, text="")
+        self.counts.pack(side="right")
 
-        self.counts = ttk.Label(outer, text="")
-        self.counts.pack(fill="x")
-        self.flight = ttk.Label(outer, text="")
-        self.flight.pack(fill="x", pady=(2, 6))
-
-        packets = ttk.LabelFrame(outer, text="Packets sent: UTC time, then the record (newest at the bottom)", padding=6)
-        packets.pack(fill="both", expand=True)
-        self.lines = tk.Text(packets, height=14, font=mono, wrap="none", state="disabled",
+        # What goes out: the packets, exactly, and the last one taken apart
+        sent = ttk.Frame(outer)
+        sent.pack(fill="both", expand=True)
+        packets = ttk.LabelFrame(sent, text="SENT: each packet exactly as it goes out (newest at the bottom)",
+                                 padding=6)
+        packets.pack(side="left", fill="both", expand=True)
+        text_area = ttk.Frame(packets)
+        text_area.pack(fill="both", expand=True)
+        self.lines = tk.Text(text_area, height=12, width=52, font=mono, wrap="none", state="disabled",
                              background="#0d1117", foreground="#e6edf3", relief="flat")
-        scroll = ttk.Scrollbar(packets, command=self.lines.yview)
+        scroll = ttk.Scrollbar(text_area, command=self.lines.yview)
         self.lines.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.lines.pack(side="left", fill="both", expand=True)
-        self.lines.tag_configure("error", foreground="#ff7b72")
+        ttk.Label(packets, foreground=GREY, text="Every packet also ends with CR LF (not shown). Nothing "
+                  "else is sent.").pack(anchor="w", pady=(4, 0))
 
-        ttk.Label(outer, text="Fields: " + FIELDS, foreground=GREY, wraplength=730, justify="left"
-                  ).pack(fill="x", pady=(8, 0))
-        ttk.Label(outer, foreground=GREY,
-                  text="Record format from AMDAS %s. Each record ends with CR LF." % AMDAS_VERSION
-                  ).pack(fill="x")
+        table = ttk.LabelFrame(sent, text="SENT: the last packet, field by field", padding=8)
+        table.pack(side="left", fill="y", padx=(10, 0))
+        ttk.Label(table, text="Field", foreground=GREY).grid(row=0, column=0, sticky="w")
+        ttk.Label(table, text="Sent", foreground=GREY).grid(row=0, column=1, sticky="w", padx=10)
+        ttk.Label(table, text="Means", foreground=GREY).grid(row=0, column=2, sticky="w")
+        self.field_values = []
+        for row, (name, _) in enumerate(FIELDS, start=1):
+            ttk.Label(table, text="%d  %s" % (row, name)).grid(row=row, column=0, sticky="w", pady=2)
+            value = ttk.Label(table, text="", font=mono_bold)
+            value.grid(row=row, column=1, sticky="w", padx=10)
+            means = ttk.Label(table, text="", foreground=GREY)
+            means.grid(row=row, column=2, sticky="w")
+            self.field_values.append((value, means))
+
+        # Not sent: what the simulation is doing
+        info = ttk.LabelFrame(outer, text="NOT SENT: the simulated flight, shown here only", padding=8)
+        info.pack(fill="x", pady=(10, 0))
+        self.flight = ttk.Label(info, text="Press Start.", foreground=GREY)
+        self.flight.pack(anchor="w")
+
+        ttk.Label(outer, foreground=GREY, text="Record format from AMDAS %s." % AMDAS_VERSION
+                  ).pack(anchor="w", pady=(6, 0))
         self.root.after(100, self.poll)
 
     # ---- start / stop
@@ -133,7 +165,7 @@ class Window:
             widget.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.state.configure(text="Stopped", fg=GREY)
-        self.flight.configure(text="")
+        self.flight.configure(text="Stopped.")
 
     def close(self):
         self.stop()
@@ -143,7 +175,7 @@ class Window:
 
     def update_counts(self):
         s = self.sender
-        self.counts.configure(text="Sent %d · errors %d" % (s.sent, s.errors))
+        self.counts.configure(text="Sent %d · failed %d" % (s.sent, s.errors))
 
     def poll(self):
         try:
@@ -151,32 +183,42 @@ class Window:
                 payload, point, error, utc_second = self.events.get_nowait()
                 if self.sender is None:
                     continue
-                self.add_line(payload, error, utc_second)
                 self.update_counts()
-                self.flight.configure(text="%s · %s ft above the field · GPS %s · %s of %s" % (
-                    point.phase, format(round(point.altitude_ft), ","), FIX_NAMES[point.gps_fix],
-                    mmss(point.elapsed), mmss(self.sender.flight.total)))
+                self.flight.configure(foreground="", text="%s · %s ft above the field · GPS %s · %s into a "
+                                      "%s flight" % (point.phase, format(round(point.altitude_ft), ","),
+                                                     FIX_NAMES[point.gps_fix], mmss(point.elapsed),
+                                                     mmss(self.sender.flight.total)))
                 if error:
                     self.state.configure(text="Send failed: %s" % error, fg=RED)
-                else:
-                    self.state.configure(text="Sending to %s:%d" % self.sender.address, fg=GREEN)
+                    continue
+                self.state.configure(text="Sending to %s:%d" % self.sender.address, fg=GREEN)
+                self.add_line(payload)
+                self.show_fields(payload)
         except queue.Empty:
             pass
         self.root.after(100, self.poll)
 
-    def add_line(self, payload, error, utc_second):
-        text = "%s  %s" % (time.strftime("%H:%M:%S", time.gmtime(utc_second)), payload.decode("ascii").rstrip("\r\n"))
-        if error:
-            text += "   NOT SENT: " + error
+    def add_line(self, payload):
         at_bottom = self.lines.yview()[1] >= 0.999
         self.lines.configure(state="normal")
-        self.lines.insert("end", text + "\n", ("error",) if error else ())
+        self.lines.insert("end", payload.decode("ascii").rstrip("\r\n") + "\n")
         extra = int(self.lines.index("end-1c").split(".")[0]) - 1 - KEEP_LINES
         if extra > 0:
             self.lines.delete("1.0", "%d.0" % (extra + 1))
         self.lines.configure(state="disabled")
         if at_bottom:
             self.lines.see("end")
+
+    def show_fields(self, payload):
+        values = payload.decode("ascii").rstrip("\r\n").split(",")
+        for i, ((name, means), (value_label, means_label)) in enumerate(zip(FIELDS, self.field_values)):
+            if i >= len(values):
+                value_label.configure(text="—")
+                means_label.configure(text="not sent (6-field record)")
+                continue
+            text = values[i]
+            value_label.configure(text=text)
+            means_label.configure(text=means(text) if callable(means) else means)
 
 
 def self_test():
@@ -199,7 +241,15 @@ def self_test():
     receiver.close()
     try:
         root = tk.Tk()
-        Window(root)
+        window = Window(root)
+        for record in (b"51893,+14.70098,-0009.48,+0000.00,+21.01,+054.73,0\r\n",
+                       b"51893,+14.70098,-0009.48,+0000.00,+21.01,+054.73\r\n"):
+            window.add_line(record)
+            window.show_fields(record)
+        if window.field_values[0][1].cget("text") != "= 14:24:53 UTC, seconds since midnight":
+            problems.append("window: sys_time shown as %r" % window.field_values[0][1].cget("text"))
+        if window.field_values[6][0].cget("text") != "—":
+            problems.append("window: gps_fix shown for a 6-field record")
         root.update()
         root.destroy()
     except Exception as exc:

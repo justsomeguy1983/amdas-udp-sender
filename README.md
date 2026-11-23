@@ -21,8 +21,17 @@ is built by AMDAS's own formatting code (copied unchanged into `amdas/`), so the
    receiver on the same computer.
 2. **Flight length**: one simulated flight, 5 to 600 minutes (default 20). It then starts again.
 3. **Send 7 fields**: ticked sends what AMDAS sends today. Clear it to get the older 6-field record.
-4. **Start**. The first record goes out at the next whole second; every record sent is listed. **Stop**
-   ends it; settings can be changed while stopped.
+4. **Start**. The first record goes out at the next whole second. **Stop** ends it; settings can be changed
+   while stopped.
+
+What the window shows:
+
+- **SENT, left:** every packet exactly as it goes out, newest at the bottom. Each also ends with CR LF.
+  Nothing else is sent.
+- **SENT, right:** the last packet taken apart field by field, with what each field means (sys_time as a
+  UTC clock time, gps_fix as a fix name).
+- **NOT SENT, bottom:** what the simulated flight is doing: phase, altitude above the field, GPS state and
+  time into the flight. For information only.
 
 ### Receiver on the same computer (127.0.0.1)
 
